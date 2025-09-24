@@ -18,12 +18,9 @@ package net.lbruun.cache;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.SoftReference;
-import java.time.Duration;
-import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Function;
-import org.springframework.lang.Nullable;
 
 /**
  * Concurrent cache which evicts elements when there is memory pressure on the application. The
@@ -56,8 +53,7 @@ import org.springframework.lang.Nullable;
  *     real usable values and values which has been garbage collected and are therefore empty. The
  *     latter, empty values, are effectively values that are "marked for deletion" from the map.
  *     Such values are never returned from any of the methods of this class. Empty values are
- *     removed from the map periodically (by a background 'reaper' thread) or removed immediately
- *     when encountered in one of the method invocations.
+ *     removed from the map when encountered in one of the method invocations.
  * @param <K> key type
  * @param <V> value type
  */
@@ -67,9 +63,7 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
   private final ConcurrentMap<K, SoftValue<K, V>> map;
   private final ReferenceQueue<V> referenceQueue = new ReferenceQueue<>();
   private final SimpleQueue<K, V> hardCache;
-  private final ScheduledFuture<?> reaperFuture;
-  private final ScheduledExecutorService reaperExecutor;
-  private final boolean reaperExecutorIsOurOwn;
+  private final Class<K> keyClass;
   private volatile boolean closed = false;
 
   /**
@@ -92,119 +86,31 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
    * @param initialCapacity the initial capacity of the map used by this cache. If {@link
    *     #USE_DEFAULT_MAP_INITIAL_CAPACITY} then the JDK's default value will be used, typically 16.
    *     See {@link ConcurrentHashMap#ConcurrentHashMap(int)} for more information.
-   * @param reaperExecutorService executor service to use for the background reaper thread. If
-   *     {@code null} (recommended) then a default executor service will be created which uses a
-   *     single daemon thread. If a custom executor service is provided, then it is the caller's
-   *     responsibility to shutdown the executor service when it is no longer needed.
    * @param reaperInitialDelay the initial delay before the reaper fires.
    * @param reaperInterval the periodic interval at which the reaper fires.
    */
-  public MemorySensitiveCache(
-      final Class<K> keyClass,
-      int hardRefSize,
-      int initialCapacity,
-      @Nullable ScheduledExecutorService reaperExecutorService,
-      Duration reaperInitialDelay,
-      Duration reaperInterval) {
+  public MemorySensitiveCache(final Class<K> keyClass, int hardRefSize, int initialCapacity) {
     Objects.requireNonNull(keyClass, "keyClass must not be null");
-    Objects.requireNonNull(reaperInitialDelay, "reaperInitialDelay must not be null");
-    Objects.requireNonNull(reaperInterval, "reaperInterval must not be null");
 
+    this.keyClass = keyClass;
     this.map =
         (initialCapacity == USE_DEFAULT_MAP_INITIAL_CAPACITY)
             ? new ConcurrentHashMap<>()
             : new ConcurrentHashMap<>(initialCapacity);
     this.hardCache =
         (hardRefSize == 0) ? new SimpleQueueNoOpImpl<>() : new SimpleQueueImpl<>(hardRefSize);
-
-    this.reaperExecutor =
-        (reaperExecutorService == null) ? defaultScheduledExecutorService() : reaperExecutorService;
-    this.reaperExecutorIsOurOwn = reaperExecutorService == null;
-    // The garbage collector will clear the memory allocated to the SoftReferences, but the actual
-    // association between the key and the SoftReference will remain in the underlying map.
-    // Therefore, we need a periodic mechanism to clear these from the map ... even if the memory
-    // consumption of a key and an empty SoftReference is probably not much to worry about.
-    // In any case, if we do not do this, the map will grow indefinitely.
-    this.reaperFuture =
-        this.reaperExecutor.scheduleWithFixedDelay(
-            () -> {
-              // Remove objects which have been GC'ed
-              while (!closed) {
-                Reference<? extends V> ref = referenceQueue.poll();
-                if (ref == null) {
-                  break;
-                }
-
-                // This will indeed always be the case
-                if (ref instanceof SoftValue<?, ?> softValue) {
-                  // In principle (and reality, because we're not using the ReferenceQueue for any
-                  // other
-                  // purpose), the key is always of type K, but type information was lost due to
-                  // type
-                  // erasure.
-                  Object oKey = softValue.key;
-                  if (keyClass.isInstance(oKey)) {
-                    K key = keyClass.cast(oKey);
-                    // The value may theoretically have entered into the cache (again)
-                    // in the meantime. So remove _conditionally_.
-                    if (!closed) {
-                      removeIfEmpty(key);
-                    }
-                  }
-                }
-              }
-            },
-            TimeUnit.MILLISECONDS.convert(reaperInitialDelay),
-            TimeUnit.MILLISECONDS.convert(reaperInterval),
-            TimeUnit.MILLISECONDS);
   }
 
   /**
-   * Creates a cache with default reaper executor.
-   *
-   * <p>The background reaper thread, responsible for removing garbage collected values from the
-   * map, will fire every 2 minutes.
+   * Creates a cache with default initial capacity.
    *
    * @param keyClass class for the key
    * @param hardRefSize number of elements which are "hard referenced" meaning they are never GC'ed.
    *     (value must be &ge; 0)
-   * @param reaperInitialDelay the initial delay before the reaper fires.
-   * @param reaperInterval the periodic interval at which the reaper fires.
-   * @see #MemorySensitiveCache(Class, int, int, ScheduledExecutorService, Duration, Duration)
-   */
-  public MemorySensitiveCache(
-      final Class<K> keyClass,
-      int hardRefSize,
-      Duration reaperInitialDelay,
-      Duration reaperInterval) {
-    this(
-        keyClass,
-        hardRefSize,
-        USE_DEFAULT_MAP_INITIAL_CAPACITY,
-        null,
-        reaperInitialDelay,
-        reaperInterval);
-  }
-
-  /**
-   * Creates a cache with default reaper settings.
-   *
-   * <p>The background reaper thread, responsible for removing garbage collected values from the
-   * map, will fire every 2 minutes.
-   *
-   * @param keyClass class for the key
-   * @param hardRefSize number of elements which are "hard referenced" meaning they are never GC'ed.
-   *     (value must be &ge; 0)
-   * @see #MemorySensitiveCache(Class, int, int, ScheduledExecutorService, Duration, Duration)
+   * @see #MemorySensitiveCache(Class, int, int)
    */
   public MemorySensitiveCache(final Class<K> keyClass, int hardRefSize) {
-    this(
-        keyClass,
-        hardRefSize,
-        USE_DEFAULT_MAP_INITIAL_CAPACITY,
-        null,
-        Duration.of(30, ChronoUnit.SECONDS),
-        Duration.of(2, ChronoUnit.MINUTES));
+    this(keyClass, hardRefSize, USE_DEFAULT_MAP_INITIAL_CAPACITY);
   }
 
   private static ScheduledExecutorService defaultScheduledExecutorService() {
@@ -218,6 +124,44 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
   }
 
   /**
+   * Removes stale entries from the map. Stale entries are entries whose values have been garbage
+   * collected.
+   *
+   * <p>The method is invoked for every access to the cache. According to the JDK's Javadoc (see
+   * https://docs.oracle.com/en/java/javase/24/docs/api/java.base/java/lang/ref/package-summary.html#notification-heading)
+   * this is very fast and should not be a performance issue. It is also how WeakHashMap does it.
+   */
+  private void expungeStaleEntries() {
+    // Remove objects which have been GC'ed
+    int count = 0;
+
+    // Avoid handling bursts of garbage collected objects in one go.
+    while (count < 100 && (!closed)) {
+      Reference<? extends V> ref = referenceQueue.poll();
+      if (ref == null) {
+        break;
+      }
+      count++;
+
+      // This will indeed always be the case
+      if (ref instanceof SoftValue<?, ?> softValue) {
+        // In principle (and reality, because we're not using the ReferenceQueue for
+        // any other purpose), the key is always of type K, but type information was
+        // lost due to type erasure.
+        Object oKey = softValue.key;
+        if (keyClass.isInstance(oKey)) {
+          K key = keyClass.cast(oKey);
+          // The value may theoretically have entered into the cache (again)
+          // in the meantime. So remove _conditionally_.
+          if (!closed) {
+            removeIfEmpty(key, false);
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Get value from the cache.
    *
    * @param key the key whose associated value is to be returned (not {@code null})
@@ -228,7 +172,7 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
     if (closed) {
       throw new IllegalStateException("Cache has been closed");
     }
-
+    expungeStaleEntries();
     SoftValue<K, V> softValue =
         map.compute(
             key,
@@ -308,6 +252,7 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
     if (closed) {
       throw new IllegalStateException("Cache has been closed");
     }
+    expungeStaleEntries();
     map.compute(key, (k, v) -> compute00(key, mappingFunction, true));
   }
 
@@ -357,6 +302,7 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
     if (closed) {
       throw new IllegalStateException("Cache has been closed");
     }
+    expungeStaleEntries();
 
     // Atomically check if the key is already associated with a value.
     // If so, check if the value is empty. In this case, treat as if the value
@@ -438,6 +384,10 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
    * @return value or {@code null}, see above for details
    */
   public final V removeIfEmpty(K key) {
+    return removeIfEmpty(key, true);
+  }
+
+  private V removeIfEmpty(K key, boolean performHousekeeping) {
     Objects.requireNonNull(key, "key cannot be null");
     if (closed) {
       throw new IllegalStateException("Cache has been closed");
@@ -460,6 +410,12 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
 
   /** Clears the cache completely. */
   public synchronized void clear() {
+    while (true) { // drain the reference queue
+      Reference<? extends V> element = referenceQueue.poll();
+      if (element == null) {
+        break;
+      }
+    }
     map.clear();
     hardCache.clear();
   }
@@ -481,61 +437,22 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
       return;
     }
     this.closed = true;
-    this.reaperFuture.cancel(false);
     clear();
-    if (reaperExecutorIsOurOwn) {
-      this.reaperExecutor.shutdown();
-      // Executor's thread is a daemon thread, so we don't need to wait for it to terminate.
-    } else {
-      // The executor service was provided by the caller, so it is the caller's
-      // responsibility to shutdown the executor service when it is no longer needed.
-    }
   }
 
   /**
-   * Gets the approximate size of the cache. This is the number of elements in the cache, including
-   * those which are empty because the value has been garbage collected. Empty values are
-   * effectively "marked for deletion" and exist only for a short period of time. Empty values are
-   * never returned by the {@link #get(Object)} method.
+   * Gets the size of the cache.
    *
    * <p>The method has constant time characteristics, <i>O(1)</i>.
    */
-  public int sizeApprox() {
+  public int size() {
+    expungeStaleEntries();
     return map.size();
   }
 
   public boolean isEmpty() {
+    expungeStaleEntries();
     return map.isEmpty();
-  }
-
-  /**
-   * Gets the size of the cache. This is the number of non-empty elements in the cache and as such,
-   * the true size of the cache.
-   *
-   * <p>The method has linear time characteristics, <i>O(n)</i>, so should be used with care.
-   * Consider using {@link #sizeApprox()} if you can accept an approximate size.
-   */
-  public int size() {
-    int count = 0;
-    final List<K> toBeRemoved = new ArrayList<>();
-    for (Map.Entry<K, SoftValue<K, V>> entry : map.entrySet()) {
-      SoftValue<K, V> softValue = entry.getValue();
-      if (softValue.get() != null) {
-        count++;
-      } else {
-        toBeRemoved.add(entry.getKey());
-      }
-    }
-    if (!toBeRemoved.isEmpty()) {
-      // In background: Remove the empty values we've encountered
-      this.reaperExecutor.submit(
-          () ->
-              toBeRemoved.forEach(
-                  k -> {
-                    if (!closed) removeIfEmpty(k);
-                  }));
-    }
-    return count;
   }
 
   /**
@@ -552,6 +469,7 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
     if (closed) {
       throw new IllegalStateException("Cache has been closed");
     }
+    expungeStaleEntries();
 
     final Iterator<SoftValue<K, V>> baseIterator = map.values().iterator();
 

@@ -17,8 +17,6 @@ package net.lbruun.cache;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.time.Duration;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -29,8 +27,7 @@ class MemorySensitiveCacheTest {
   @Test
   void get() {
     try (MemorySensitiveCache<Integer, String> cache =
-        new MemorySensitiveCache<>(
-            Integer.class, 10, Duration.ofSeconds(3), Duration.ofSeconds(3))) {
+        new MemorySensitiveCache<>(Integer.class, 10)) {
       cache.put(1, "1");
       cache.put(2, "2");
       cache.put(3, "3");
@@ -45,13 +42,12 @@ class MemorySensitiveCacheTest {
   @Test
   void testPutAndGet() {
     try (MemorySensitiveCache<Integer, String> cache =
-        new MemorySensitiveCache<>(
-            Integer.class, 2, Duration.ofSeconds(3), Duration.ofSeconds(3))) {
+        new MemorySensitiveCache<>(Integer.class, 2)) {
       cache.put(1, "one");
       cache.put(2, "two");
       assertEquals("one", cache.get(1));
       assertEquals("two", cache.get(2));
-      assertEquals(2, cache.sizeApprox());
+      assertEquals(2, cache.size());
     }
   }
 
@@ -61,11 +57,7 @@ class MemorySensitiveCacheTest {
   @Test
   void remove() {
     try (MemorySensitiveCache<Integer, String> cache =
-        new MemorySensitiveCache<>(
-            Integer.class,
-            2,
-            Duration.of(3, ChronoUnit.SECONDS),
-            Duration.of(3, ChronoUnit.SECONDS))) {
+        new MemorySensitiveCache<>(Integer.class, 2)) {
       cache.put(1, "1");
 
       assertEquals(1, cache.hardCacheSize());
@@ -91,11 +83,7 @@ class MemorySensitiveCacheTest {
   @Test
   void removeIfEmpty() {
     try (MemorySensitiveCache<Integer, byte[]> cache =
-        new MemorySensitiveCache<>(
-            Integer.class,
-            1,
-            Duration.of(3, ChronoUnit.MINUTES),
-            Duration.of(3, ChronoUnit.MINUTES))) {
+        new MemorySensitiveCache<>(Integer.class, 1)) {
       cache.put(1, randomBytes(10000000));
       cache.put(2, randomBytes(10000000));
       cache.put(3, randomBytes(10000000));
@@ -124,11 +112,7 @@ class MemorySensitiveCacheTest {
   @Test
   void test_memoryPressure() {
     try (MemorySensitiveCache<Integer, byte[]> cache =
-        new MemorySensitiveCache<>(
-            Integer.class,
-            0,
-            Duration.of(3, ChronoUnit.SECONDS),
-            Duration.of(3, ChronoUnit.SECONDS)) {}) {
+        new MemorySensitiveCache<>(Integer.class, 0) {}) {
       cache.put(1, randomBytes(10000000));
       cache.put(2, randomBytes(10000000));
       cache.put(3, randomBytes(10000000));
@@ -148,11 +132,7 @@ class MemorySensitiveCacheTest {
   @Test
   void test_memoryPressure2() throws InterruptedException {
     try (MemorySensitiveCache<Integer, byte[]> cache =
-        new MemorySensitiveCache<>(
-            Integer.class,
-            0,
-            Duration.of(99, ChronoUnit.HOURS),
-            Duration.of(99, ChronoUnit.HOURS)) {}) {
+        new MemorySensitiveCache<>(Integer.class, 0) {}) {
 
       // System.gc();
       // Thread.sleep(1000);
@@ -192,11 +172,7 @@ class MemorySensitiveCacheTest {
   void test_memoryPressureForever() throws InterruptedException {
 
     try (MemorySensitiveCache<Integer, byte[]> cache =
-        new MemorySensitiveCache<>(
-            Integer.class,
-            100,
-            Duration.of(1, ChronoUnit.MINUTES),
-            Duration.of(1, ChronoUnit.MINUTES)) {}) {
+        new MemorySensitiveCache<>(Integer.class, 100) {}) {
 
       Random rand = new Random();
       int min = 1014 * 10;

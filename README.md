@@ -1,4 +1,6 @@
 # Memory-sensitive Cache
+[![Maven Central](https://maven-badges.herokuapp.com/maven-central/net.lbruun.cache/memorysensitive-cache/badge.svg)](https://maven-badges.herokuapp.com/maven-central/net.lbruun.cache/memorysensitive-cache)
+[![javadoc](https://javadoc.io/badge2/net.lbruun.cache/memorysensitive-cache/javadoc.svg)](https://javadoc.io/doc/net.lbruun.cache/memorysensitive-cache)
 
 A simple in-memory concurrent cache which grows with the available memory and starts evicting
 entries when the JVM is under memory pressure. Thus, the cache shrinks when the memory is needed
@@ -8,17 +10,17 @@ elsewhere in the application. Unused memory is wasted memory. You might as well 
 
 - Fully concurrent
 - Evicts entries when the system is under memory pressure (see [Eviction](#eviction) below)
-- Optionally retains hard references to the most recently used X entries (see [Hard references](#hard-references) below)
+- Optionally retains hard references to the most recently used N entries (see [Hard references](#hard-references) below)
 
-### Eviction
+### Eviction when memory pressure
 
 The cache uses `SoftReference` to hold the values. This means that the values are eligible for
 garbage collection when the JVM is under memory pressure. The cache will grow until the point
 where the JVM needs to reclaim memory, at which point the garbage collector will start
 collecting the soft references and thus evicting entries from the cache.
 
-The JVM's garbage collector does not guarantee a fully predictable collection order of
-`SoftReference`s, but it is biased towards first-in-first-out. This means that the oldest entries
+The JVM's garbage collector does not guarantee a fully predictable _collection order_ of the
+`SoftReference`s, but it is biased towards first-in-first-out (FIFO). This means that the oldest entries
 are more likely to be evicted first from this cache.
 
 Also, note that because garbage collection happens
@@ -46,49 +48,42 @@ recently used ones which means the sub-set of hard referenced values changes ove
 are accessed or added to the cache.
 
 
-### Background reaper thread
-
-The cache has a background thread which periodically clears entries from the cache which
-have been garbage collected. This is done to prevent the cache from growing indefinitely.
-Garbage collected values take up the memory occupied by a Key and an empty object reference. 
-For most caches, this is a very small memory footprint, because the objects used for keys tend to be small. 
-Yet, it would still be a waste of memory to keep them around forever. This is the problem solved by 
-the reaper thread.
-
-As can be seen, because of the rather small memory consumption of these empty entries, the
-reaper thread does not need to run <i>very</i> often. The default is once every 2 minutes,
-but this can be configured in the constructor. The reaper thread is a daemon thread, so it
-will not prevent the JVM from shutting down. Nevertheless, it is recommended to call the `close()`
-method when the cache is no longer needed, to stop the reaper thread. If not, the reaper thread
-will continue to run periodically until the JVM shuts down.
-
-
-### Performance
-
-The performance characteristics of this cache is similar to that of a `ConcurrentHashMap`.
-
 ## Usage
 
 This cache is suitable where the requirement is that the cache should be able to expand with
 the available memory and where it is acceptable that eviction is not fully predictable, but
 at least _biased_ towards first-in-first-out.
 
-You should close the cache when it is no longer needed by calling the `close()` method. If not,
-the background thread will continue to run.
+### Requirements
+Java 17 or later.
 
+
+### Maven Central coordinates
+
+**groupId**: `net.lbruun.cache` \
+**artifactId**: `memorysensitive-cache` \
+**version**: check [Maven Central](https://search.maven.org/artifact/net.lbruun.cache/memorysensitive-cache)
+
+
+
+### Instantiate the cache
+
+Here is a Spring example of how to instantiate the cache as a Spring bean:
 
 ```java
-
 import net.lbruun.cache.MemorySensitiveCache;
 
 @Configuration
-public class MyBean {
+public class MyConfig {
 
-    // Spring will automatically call the close() method on this bean when the application context is closed.
+    // Spring will automatically call the close() method on this bean 
+    // when the application context is closed.
     @Bean
     public MemorySensitiveCacheCache <Integer, String> cacheOfAllGoodThings() {
-        // Create a cache which retains hard references to the 10 most recently used entries
-        return new MemoryPressureCache<>(Integer.class, 10);
+        // Create a cache which retains hard references to the 100 most recently used entries
+        return new MemoryPressureCache<>(Integer.class, 100);
     }
 }
 ```
+
+You should close the cache when it is no longer needed by calling the `close()` method. 
