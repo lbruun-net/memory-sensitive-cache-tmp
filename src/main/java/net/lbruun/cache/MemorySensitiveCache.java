@@ -505,7 +505,7 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
   }
 
   public boolean isEmpty() {
-      return map.isEmpty();
+    return map.isEmpty();
   }
 
   /**
@@ -593,9 +593,13 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
   /** Deque of key-value references. */
   private static interface SimpleQueue<K, V> {
     void add(K key, V value);
+
     void touch(K key, V value);
+
     void remove(K key);
+
     void clear();
+
     int size();
   }
 
@@ -645,13 +649,13 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
    * <p>The class is thread-safe.
    */
   private static class SimpleQueueImpl<K, V> implements SimpleQueue<K, V> {
-      private final Queue<KeyValuePair<K, V>> queue;
+    private final Queue<KeyValuePair<K, V>> queue;
 
     public SimpleQueueImpl(final int maxSize) {
       if (maxSize < 0) {
         throw new IllegalArgumentException("maxSize must be >= 0");
       }
-      this.queue = new  LinkedBlockingQueue<>(maxSize);
+      this.queue = new LinkedBlockingQueue<>(maxSize);
     }
 
     /**
@@ -662,19 +666,19 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
     public void add(K key, V value) {
       Objects.requireNonNull(key, "key cannot be null");
       Objects.requireNonNull(value, "value cannot be null");
-        KeyValuePair<K, V> element = new KeyValuePair<>(key, value);
-        while (!queue.offer(element)) {
-            queue.poll();
-        }
+      KeyValuePair<K, V> element = new KeyValuePair<>(key, value);
+      while (!queue.offer(element)) {
+        queue.poll();
+      }
     }
 
-      @Override
-      public void touch(K key, V value) {
-        remove(key);
-        add(key, value);
-      }
+    @Override
+    public void touch(K key, V value) {
+      remove(key);
+      add(key, value);
+    }
 
-      @Override
+    @Override
     public void remove(K key) {
       Objects.requireNonNull(key, "key cannot be null");
       Iterator<KeyValuePair<K, V>> iterator = queue.iterator();
