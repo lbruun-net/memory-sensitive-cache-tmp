@@ -1,0 +1,81 @@
+# Copyright 2025 lbruun.net.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI workflow
+
+on:
+  push:
+    # Only on push of commits, not push of tags (we have 'release' for that)
+    branches:
+      - "main"
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java and Maven
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          server-id: maven-central # Value of <id> in <server> section of generated settings.xml
+          server-username: MAVEN_CENTRAL_USERNAME # env variable for username in <server> section of generated settings.xml
+          server-password: MAVEN_CENTRAL_PASSWORD # env variable for password in <server> section of generated settings.xml
+
+
+        # Check if the git tag complies with SemVer rules
+      - name: Check version string
+        if:  ${{ github.event_name == 'release' }}
+        run: |
+          semver_regex='^v?([0-9]+\.[0-9]+\.[0-9]+(\-[0-9a-zA-Z.]+)*)$'
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            # Does tag look like a SemVer string?
+            if [[ "$GITHUB_REF_NAME" =~ $semver_regex ]]; then
+              echo "Verified: Git tag \"${GITHUB_REF_NAME#v}\" is a valid semantic versioning string."
+            else
+              echo "ERROR: Git tag \"${GITHUB_REF_NAME}\" is not a valid semantic versioning string."
+              echo "       Cannot create release !"
+              exit 1
+            fi
+          fi
+
+
+      - name: Maven execution
+        run: |
+          ./mvnw \
+            --show-version \
+            --batch-mode \
+            --no-transfer-progress \
+            -Dci.project.url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            -Dci.scm.tag="${GITHUB_REF_NAME}" \
+            -Drevision="${GITHUB_REF_NAME#v}" \
+            -P$MVN_PROFILES \
+              $MVN_PHASE
+        env:
+          MVN_PHASE: ${{ github.event_name == 'release' && 'deploy' || 'verify' }}
+          MVN_PROFILES: ${{ github.event_name == 'release' && '"publication"' || '""' }}
+          # The following 2 env vars are used by the Maven GPG Plugin
+          MAVEN_GPG_KEY: ${{ secrets.MAVEN_CENTRAL_GPG_SECRET_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_CENTRAL_GPG_PASSPHRASE }}
+          # The following 2 env vars are used when uploading to Central
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }} # Must be the token "username", not the username for the UI
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }} # Must be the token "password", not the password for the UI
