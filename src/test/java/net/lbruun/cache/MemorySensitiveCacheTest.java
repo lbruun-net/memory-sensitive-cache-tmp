@@ -26,29 +26,25 @@ import org.junit.jupiter.api.Test;
 class MemorySensitiveCacheTest {
   @Test
   void get() {
-    try (MemorySensitiveCache<Integer, String> cache =
-        new MemorySensitiveCache<>(Integer.class, 10)) {
-      cache.put(1, "1");
-      cache.put(2, "2");
-      cache.put(3, "3");
+    MemorySensitiveCache<Integer, String> cache = new MemorySensitiveCache<>(Integer.class, 10);
+    cache.put(1, "1");
+    cache.put(2, "2");
+    cache.put(3, "3");
 
-      assertEquals(3, cache.size());
+    assertEquals(3, cache.size());
 
-      String s = cache.get(1);
-      assertEquals("1", s);
-    }
+    String s = cache.get(1);
+    assertEquals("1", s);
   }
 
   @Test
   void testPutAndGet() {
-    try (MemorySensitiveCache<Integer, String> cache =
-        new MemorySensitiveCache<>(Integer.class, 2)) {
-      cache.put(1, "one");
-      cache.put(2, "two");
-      assertEquals("one", cache.get(1));
-      assertEquals("two", cache.get(2));
-      assertEquals(2, cache.size());
-    }
+    MemorySensitiveCache<Integer, String> cache = new MemorySensitiveCache<>(Integer.class, 2);
+    cache.put(1, "one");
+    cache.put(2, "two");
+    assertEquals("one", cache.get(1));
+    assertEquals("two", cache.get(2));
+    assertEquals(2, cache.size());
   }
 
   @Test
@@ -56,51 +52,47 @@ class MemorySensitiveCacheTest {
 
   @Test
   void remove() {
-    try (MemorySensitiveCache<Integer, String> cache =
-        new MemorySensitiveCache<>(Integer.class, 2)) {
-      cache.put(1, "1");
+    MemorySensitiveCache<Integer, String> cache = new MemorySensitiveCache<>(Integer.class, 2);
+    cache.put(1, "1");
 
-      assertEquals(1, cache.hardCacheSize());
-      cache.put(2, "2");
-      assertEquals(2, cache.hardCacheSize());
-      cache.put(3, "3");
-      cache.put(4, "4");
-      cache.put(5, "5");
-      cache.put(6, "6");
-      assertEquals(2, cache.hardCacheSize());
+    assertEquals(1, cache.hardCacheSize());
+    cache.put(2, "2");
+    assertEquals(2, cache.hardCacheSize());
+    cache.put(3, "3");
+    cache.put(4, "4");
+    cache.put(5, "5");
+    cache.put(6, "6");
+    assertEquals(2, cache.hardCacheSize());
 
-      assertEquals(6, cache.size());
+    assertEquals(6, cache.size());
 
-      cache.remove(1);
-      assertEquals(5, cache.size());
+    cache.remove(1);
+    assertEquals(5, cache.size());
 
-      cache.remove(6);
-      assertEquals(4, cache.size());
-      assertEquals(1, cache.hardCacheSize());
-    }
+    cache.remove(6);
+    assertEquals(4, cache.size());
+    assertEquals(1, cache.hardCacheSize());
   }
 
   @Test
   void removeIfEmpty() {
-    try (MemorySensitiveCache<Integer, byte[]> cache =
-        new MemorySensitiveCache<>(Integer.class, 1)) {
-      cache.put(1, randomBytes(10000000));
-      cache.put(2, randomBytes(10000000));
-      cache.put(3, randomBytes(10000000));
+    MemorySensitiveCache<Integer, byte[]> cache = new MemorySensitiveCache<>(Integer.class, 1);
+    cache.put(1, randomBytes(10000000));
+    cache.put(2, randomBytes(10000000));
+    cache.put(3, randomBytes(10000000));
 
-      assertEquals(3, cache.size());
-      assertNotNull(cache.get(1));
-      assertNotNull(cache.get(2));
-      assertNotNull(cache.get(3));
+    assertEquals(3, cache.size());
+    assertNotNull(cache.get(1));
+    assertNotNull(cache.get(2));
+    assertNotNull(cache.get(3));
 
-      applyMemoryPressure();
+    applyMemoryPressure();
 
-      assertNull(cache.removeIfEmpty(1));
-      assertEquals(1, cache.size());
+    assertNull(cache.removeIfEmpty(1));
+    assertEquals(1, cache.size());
 
-      // The last inserted should be retained in the hard cache
-      assertNotNull(cache.removeIfEmpty(3));
-    }
+    // The last inserted should be retained in the hard cache
+    assertNotNull(cache.removeIfEmpty(3));
   }
 
   @Test
@@ -111,8 +103,8 @@ class MemorySensitiveCacheTest {
 
   @Test
   void test_memoryPressure() {
-    try (MemorySensitiveCache<Integer, byte[]> cache =
-        new MemorySensitiveCache<>(Integer.class, 0) {}) {
+    try {
+      MemorySensitiveCache<Integer, byte[]> cache = new MemorySensitiveCache<>(Integer.class, 0);
       cache.put(1, randomBytes(10000000));
       cache.put(2, randomBytes(10000000));
       cache.put(3, randomBytes(10000000));
@@ -131,59 +123,55 @@ class MemorySensitiveCacheTest {
 
   @Test
   void test_memoryPressure2() throws InterruptedException {
-    try (MemorySensitiveCache<Integer, byte[]> cache =
-        new MemorySensitiveCache<>(Integer.class, 0) {}) {
+    MemorySensitiveCache<Integer, byte[]> cache = new MemorySensitiveCache<>(Integer.class, 0);
 
-      // System.gc();
-      // Thread.sleep(1000);
-      long maxMemory = Runtime.getRuntime().maxMemory();
-      System.out.println("Max heap memory: " + maxMemory);
-      int chunkSize = 1024 * 1024;
+    // System.gc();
+    // Thread.sleep(1000);
+    long maxMemory = Runtime.getRuntime().maxMemory();
+    System.out.println("Max heap memory: " + maxMemory);
+    int chunkSize = 1024 * 1024;
 
-      // long iterations = (maxMemory / chunkSize) + 200;
-      long iterations = 2500;
-      System.out.println("No of 'put' operations: " + iterations);
-      for (int i = 0; i < iterations; i++) {
-        cache.put(i, new byte[chunkSize]);
-      }
-
-      int size = cache.size();
-      System.out.println(
-          "No of cache entries: "
-              + size
-              + " (but could have been as much as "
-              + (maxMemory / chunkSize)
-              + ")");
-
-      applyMemoryPressure();
-      size = cache.size();
-      System.out.println(
-          "No of cache entries: "
-              + size
-              + " (but could have been as much as "
-              + (maxMemory / chunkSize)
-              + ")");
-      assertTrue(size < iterations);
+    // long iterations = (maxMemory / chunkSize) + 200;
+    long iterations = 2500;
+    System.out.println("No of 'put' operations: " + iterations);
+    for (int i = 0; i < iterations; i++) {
+      cache.put(i, new byte[chunkSize]);
     }
+
+    int size = cache.size();
+    System.out.println(
+        "No of cache entries: "
+            + size
+            + " (but could have been as much as "
+            + (maxMemory / chunkSize)
+            + ")");
+
+    applyMemoryPressure();
+    size = cache.size();
+    System.out.println(
+        "No of cache entries: "
+            + size
+            + " (but could have been as much as "
+            + (maxMemory / chunkSize)
+            + ")");
+    assertTrue(size < iterations);
   }
 
   @Test
   @Disabled
   void test_memoryPressureForever() throws InterruptedException {
 
-    try (MemorySensitiveCache<Integer, byte[]> cache =
-        new MemorySensitiveCache<>(Integer.class, 100) {}) {
+    MemorySensitiveCache<Integer, byte[]> cache = new MemorySensitiveCache<>(Integer.class, 100);
 
-      Random rand = new Random();
-      int min = 1014 * 10;
-      int max = 1024 * 1024 * 25;
+    Random rand = new Random();
+    int min = 1024 * 10;
+    int max = 1024 * 1024 * 25;
 
-      int i = 0;
-      while (true) {
-        byte[] chunk = getChunk(rand, min, max);
-        cache.put(i, chunk);
-        i++;
-      }
+    int i = 0;
+    while (true) {
+      byte[] chunk = getChunk(rand, min, max);
+      cache.put(i, chunk);
+      i++;
     }
   }
 

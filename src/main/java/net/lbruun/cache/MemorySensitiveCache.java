@@ -42,12 +42,22 @@ import java.util.function.Function;
  * countermeasure to the non-predictability of the cache's eviction as explained above: at least for
  * the X most recently used elements, the retention is guaranteed.
  *
+ * <p>Entries that have been garbage collected remain in the cache using the memory consumption of a
+ * key and an empty reference. Not a lot, but the cache would grow indefinitely if such empty
+ * entries were not removed. Therefore, such entries are removed from the cache on every "touch" the
+ * cache, i.e. read, write or "size" operations. This is a very, very fast operation and can hardly
+ * show in measurements. However, garbage collection often occurs in "bursts", meaning that it may
+ * happen there is suddenly a large bunch of entries that need to be expunged. Theoretically, this
+ * can block the current cache operation for a short period of time, say 2ms. In practice, this has
+ * not been observed to be a problem. Even so, the behavior can be tuned via the {@code
+ * maxExpungePerReadOperation} parameter in the constructor. The default value of 100 means that at
+ * most GC'ed 100 entries will be expunged per read operation. If there are more entries to expunge,
+ * they will be expunged on the next read operation. By contrast, write operations and "size"
+ * operations will always expunge all GC'ed entries in one go.
+ *
  * <p>The cache is fully thread-safe.
  *
  * <p>The cache only allows non-null values.
- *
- * <p>The cache must be {@link #close() closed} when it is no longer needed. If not, the background
- * thread will continue to run.
  *
  * @implNote At any point in time, the map which is the "backend" for this cache, will contain both
  *     real usable values and values which has been garbage collected and are therefore empty. The
@@ -57,22 +67,16 @@ import java.util.function.Function;
  * @param <K> key type
  * @param <V> value type
  */
-public class MemorySensitiveCache<K, V> implements AutoCloseable {
+public class MemorySensitiveCache<K, V> {
 
   public static final int USE_DEFAULT_MAP_INITIAL_CAPACITY = -1;
   private final ConcurrentMap<K, SoftValue<K, V>> map;
   private final ReferenceQueue<V> referenceQueue = new ReferenceQueue<>();
   private final SimpleQueue<K, V> hardCache;
   private final Class<K> keyClass;
-  private volatile boolean closed = false;
 
   /**
    * Creates a cache.
-   *
-   * <p>The cache has a background reaper thread which is responsible for removing garbage collected
-   * values from the cache's underlying map. Such values take up very little space in the map;
-   * nevertheless, they need to be removed to stop the map from growing indefinitely. Because they
-   * take up so little space, the reaper does not have to fire that often.
    *
    * @param keyClass class for the key
    * @param hardRefSize number of elements which are "hard referenced" meaning they are never GC'ed.
@@ -86,10 +90,17 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
    * @param initialCapacity the initial capacity of the map used by this cache. If {@link
    *     #USE_DEFAULT_MAP_INITIAL_CAPACITY} then the JDK's default value will be used, typically 16.
    *     See {@link ConcurrentHashMap#ConcurrentHashMap(int)} for more information.
-   * @param reaperInitialDelay the initial delay before the reaper fires.
-   * @param reaperInterval the periodic interval at which the reaper fires.
+   * @param maxExpungePerReadOperation Maximum number of GC'ed entries to expunge from the cache on
+   *     a single "touch" of the cache. This applies to read-operations only (i.e. get, contains,
+   *     etc). Write operations and "size" operations will always expunge all GC'ed entries in one
+   *     go. The value must be &ge; 0. Set to {@link Integer#MAX_VALUE} to effectively disable the
+   *     feature. Default value is 100.
    */
-  public MemorySensitiveCache(final Class<K> keyClass, int hardRefSize, int initialCapacity) {
+  public MemorySensitiveCache(
+      final Class<K> keyClass,
+      int hardRefSize,
+      int initialCapacity,
+      int maxExpungePerReadOperation) {
     Objects.requireNonNull(keyClass, "keyClass must not be null");
 
     this.keyClass = keyClass;
@@ -107,20 +118,10 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
    * @param keyClass class for the key
    * @param hardRefSize number of elements which are "hard referenced" meaning they are never GC'ed.
    *     (value must be &ge; 0)
-   * @see #MemorySensitiveCache(Class, int, int)
+   * @see #MemorySensitiveCache(Class, int, int, int)
    */
   public MemorySensitiveCache(final Class<K> keyClass, int hardRefSize) {
-    this(keyClass, hardRefSize, USE_DEFAULT_MAP_INITIAL_CAPACITY);
-  }
-
-  private static ScheduledExecutorService defaultScheduledExecutorService() {
-    return Executors.newScheduledThreadPool(
-        1, // pool size
-        r -> {
-          Thread t = new Thread(r);
-          t.setDaemon(true);
-          return t;
-        });
+    this(keyClass, hardRefSize, USE_DEFAULT_MAP_INITIAL_CAPACITY, 100);
   }
 
   /**
@@ -130,13 +131,20 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
    * <p>The method is invoked for every access to the cache. According to the JDK's Javadoc (see
    * https://docs.oracle.com/en/java/javase/24/docs/api/java.base/java/lang/ref/package-summary.html#notification-heading)
    * this is very fast and should not be a performance issue. It is also how WeakHashMap does it.
+   * This has also been verified by oww measurements.
    */
-  private void expungeStaleEntries() {
+  private void expungeStaleEntries(boolean allowBlocking) {
     // Remove objects which have been GC'ed
+    // long startTime = System.nanoTime();
     int count = 0;
 
-    // Avoid handling bursts of garbage collected objects in one go.
-    while (count < 100 && (!closed)) {
+    // Avoid handling bursts of garbage collected objects in one go for read operations
+    // (allowBlocking = false)
+    // in contrast to write operations (allowBlocking = true) where we want to get rid of all stale
+    // entries as quickly as possible.
+    // It is debatable if the split should be 100 or some other number. It is also debatable if
+    // there should be a split at all since indeed it seems to be a very fast operation.
+    while ((allowBlocking) || (count < 100)) {
       Reference<? extends V> ref = referenceQueue.poll();
       if (ref == null) {
         break;
@@ -153,12 +161,15 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
           K key = keyClass.cast(oKey);
           // The value may theoretically have entered into the cache (again)
           // in the meantime. So remove _conditionally_.
-          if (!closed) {
-            removeIfEmpty(key, false);
-          }
+          removeIfEmpty(key, false);
         }
       }
     }
+    //    if (count > 0) {
+    //      long endTime = System.nanoTime();
+    //      System.out.println("Took " + (endTime - startTime)/1000000 + " ms to expunge " + count +
+    // " entries");
+    //    }
   }
 
   /**
@@ -169,10 +180,7 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
    */
   public V get(K key) {
     Objects.requireNonNull(key, "key cannot be null");
-    if (closed) {
-      throw new IllegalStateException("Cache has been closed");
-    }
-    expungeStaleEntries();
+    expungeStaleEntries(false);
     SoftValue<K, V> softValue =
         map.compute(
             key,
@@ -249,10 +257,7 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
   }
 
   private void compute0(K key, Function<K, V> mappingFunction) {
-    if (closed) {
-      throw new IllegalStateException("Cache has been closed");
-    }
-    expungeStaleEntries();
+    expungeStaleEntries(true);
     map.compute(key, (k, v) -> compute00(key, mappingFunction, true));
   }
 
@@ -267,9 +272,6 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
   public V putIfAbsent(K key, V value) {
     Objects.requireNonNull(key, "key cannot be null");
     Objects.requireNonNull(value, "value cannot be null");
-    if (closed) {
-      throw new IllegalStateException("Cache has been closed");
-    }
     V existing = get(key);
     if (existing == null) {
       put(key, value);
@@ -299,10 +301,7 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
   public V computeIfAbsent(K key, Function<K, V> mappingFunction) {
     Objects.requireNonNull(key, "key cannot be null");
     Objects.requireNonNull(mappingFunction, "mappingFunction cannot be null");
-    if (closed) {
-      throw new IllegalStateException("Cache has been closed");
-    }
-    expungeStaleEntries();
+    expungeStaleEntries(false); // is is read or write? We don't know, so let's say read
 
     // Atomically check if the key is already associated with a value.
     // If so, check if the value is empty. In this case, treat as if the value
@@ -389,9 +388,6 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
 
   private V removeIfEmpty(K key, boolean performHousekeeping) {
     Objects.requireNonNull(key, "key cannot be null");
-    if (closed) {
-      throw new IllegalStateException("Cache has been closed");
-    }
     SoftValue<K, V> softValue =
         map.computeIfPresent(
             key,
@@ -421,37 +417,17 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
   }
 
   /**
-   * Closes the cache and relinquishes any resources it holds. This includes background thread.
-   *
-   * <p>The cache must <i>NOT</i> be used after it has been closed. Doing so will result in an
-   * {@link IllegalStateException}.
-   *
-   * @implNote The background reaper thread is a daemon thread, so it will not prevent the JVM from
-   *     shutting down. However, it is still good practice to close the cache when it is no longer
-   *     needed. Otherwise, the background reaper thread will continue to be scheduled periodically
-   *     and although it will be a no-op when it runs, it is still a waste of resources.
-   */
-  @Override
-  public void close() {
-    if (closed) {
-      return;
-    }
-    this.closed = true;
-    clear();
-  }
-
-  /**
    * Gets the size of the cache.
    *
    * <p>The method has constant time characteristics, <i>O(1)</i>.
    */
   public int size() {
-    expungeStaleEntries();
+    expungeStaleEntries(true);
     return map.size();
   }
 
   public boolean isEmpty() {
-    expungeStaleEntries();
+    expungeStaleEntries(true);
     return map.isEmpty();
   }
 
@@ -466,10 +442,7 @@ public class MemorySensitiveCache<K, V> implements AutoCloseable {
    * @return iterator
    */
   public Iterator<KeyValuePair<K, V>> iterator() {
-    if (closed) {
-      throw new IllegalStateException("Cache has been closed");
-    }
-    expungeStaleEntries();
+    expungeStaleEntries(true);
 
     final Iterator<SoftValue<K, V>> baseIterator = map.values().iterator();
 

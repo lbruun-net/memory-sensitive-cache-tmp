@@ -76,8 +76,6 @@ import net.lbruun.cache.MemorySensitiveCache;
 @Configuration
 public class MyConfig {
 
-    // Spring will automatically call the close() method on this bean 
-    // when the application context is closed.
     @Bean
     public MemorySensitiveCacheCache <Integer, String> cacheOfAllGoodThings() {
         // Create a cache which retains hard references to the 100 most recently used entries
@@ -86,4 +84,3 @@ public class MyConfig {
 }
 ```
 
-You should close the cache when it is no longer needed by calling the `close()` method. 

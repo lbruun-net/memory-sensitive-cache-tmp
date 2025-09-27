@@ -142,8 +142,9 @@ limitations under the License.
             </plugin>
 
 
-            <!-- The 'flatten-maven-plugin' is required because we use Maven CI Friendly feature
-                 and because this is a multi-module project.
+            <!-- The 'flatten-maven-plugin' is not strictly required because this is a
+                 single-module project. However, it still makes sense to slim down the
+                 consumer POM.
                  See https://maven.apache.org/maven-ci-friendly.html for more information.
                  In Maven 4 we can finally get rid of this plugin.                         -->
             <plugin>
