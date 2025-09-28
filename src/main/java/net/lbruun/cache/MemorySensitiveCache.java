@@ -37,43 +37,52 @@ import java.util.function.Function;
  * is truly "needed" even if most garbage collectors attempt to shorten the collection time by not
  * necessarily collecting all what potentially <i>could</i> be collected.
  *
- * <p>As an additional feature, the cache can prevent the most recently used X elements from being
+ * <p>As an additional feature, the cache can prevent the most recently used N elements from being
  * evicted. The cache will retain a hard reference to these elements. This feature can work as a
  * countermeasure to the non-predictability of the cache's eviction as explained above: at least for
- * the X most recently used elements, the retention is guaranteed.
+ * the N most recently used elements, the retention is guaranteed.
  *
  * <p>Entries that have been garbage collected remain in the cache using the memory consumption of a
  * key and an empty reference. Not a lot, but the cache would grow indefinitely if such empty
- * entries were not removed. Therefore, such entries are removed from the cache on every "touch" the
- * cache, i.e. read, write or "size" operations. This is a very, very fast operation and can hardly
- * show in measurements. However, garbage collection often occurs in "bursts", meaning that it may
- * happen there is suddenly a large bunch of entries that need to be expunged. Theoretically, this
- * can block the current cache operation for a short period of time, say 2ms. In practice, this has
- * not been observed to be a problem. Even so, the behavior can be tuned via the {@code
+ * entries were not removed. Therefore, such entries are removed from the cache on every "touch" of
+ * the cache, i.e. read, write or "size" operations. This is a very, very fast operation and can
+ * hardly show in measurements. However, garbage collection often occurs in "bursts", meaning that
+ * it may happen there is suddenly a large bunch of entries that need to be expunged. Theoretically,
+ * this can block the current cache operation for a short period of time, say 2ms. In practice, this
+ * has not been observed to be a problem. Even so, the behavior can be tuned via the {@code
  * maxExpungePerReadOperation} parameter in the constructor. The default value of 100 means that at
- * most GC'ed 100 entries will be expunged per read operation. If there are more entries to expunge,
- * they will be expunged on the next read operation. By contrast, write operations and "size"
- * operations will always expunge all GC'ed entries in one go.
+ * most 100 GC'ed entries will be expunged per read operation. By contrast, write operations and
+ * "size" operations will always expunge all GC'ed entries in one go.
  *
  * <p>The cache is fully thread-safe.
  *
  * <p>The cache only allows non-null values.
  *
- * @implNote At any point in time, the map which is the "backend" for this cache, will contain both
- *     real usable values and values which has been garbage collected and are therefore empty. The
- *     latter, empty values, are effectively values that are "marked for deletion" from the map.
- *     Such values are never returned from any of the methods of this class. Empty values are
- *     removed from the map when encountered in one of the method invocations.
+ * <p>Behind the scenes, the cache uses a {@link ConcurrentHashMap} and therefore has roughly the
+ * same performance characteristics as that class, with the two minor exceptions:
+ *
+ * <ul>
+ *   <li>On every "touch" of the cache housekeeping (expunging GC'ed elements) is performed as
+ *       explained above. However, this is very fast and should not be measurable in practice.
+ *   <li>If the hardcache feature is used ({@code hardRefSize} &gt; 0) then there is a little
+ *       overhead associated with maintaining a set of pointers to the most recently used cache
+ *       elements.
+ * </ul>
+ *
  * @param <K> key type
  * @param <V> value type
  */
 public class MemorySensitiveCache<K, V> {
 
+  /** Indicates to use the default initial capacity of ConcurrentHashMap , whatever that may be. */
   public static final int USE_DEFAULT_MAP_INITIAL_CAPACITY = -1;
+
+  private static final Object SENTINEL = new Object();
   private final ConcurrentMap<K, SoftValue<K, V>> map;
   private final ReferenceQueue<V> referenceQueue = new ReferenceQueue<>();
   private final SimpleQueue<K, V> hardCache;
   private final Class<K> keyClass;
+  private final int maxExpungePerReadOperation;
 
   /**
    * Creates a cache.
@@ -110,6 +119,7 @@ public class MemorySensitiveCache<K, V> {
             : new ConcurrentHashMap<>(initialCapacity);
     this.hardCache =
         (hardRefSize == 0) ? new SimpleQueueNoOpImpl<>() : new SimpleQueueImpl<>(hardRefSize);
+    this.maxExpungePerReadOperation = maxExpungePerReadOperation;
   }
 
   /**
@@ -135,16 +145,14 @@ public class MemorySensitiveCache<K, V> {
    */
   private void expungeStaleEntries(boolean allowBlocking) {
     // Remove objects which have been GC'ed
-    // long startTime = System.nanoTime();
     int count = 0;
 
     // Avoid handling bursts of garbage collected objects in one go for read operations
-    // (allowBlocking = false)
-    // in contrast to write operations (allowBlocking = true) where we want to get rid of all stale
-    // entries as quickly as possible.
+    // (allowBlocking = false) ... in contrast to write operations (allowBlocking = true) where
+    // all stale entries are handled in one go.
     // It is debatable if the split should be 100 or some other number. It is also debatable if
     // there should be a split at all since indeed it seems to be a very fast operation.
-    while ((allowBlocking) || (count < 100)) {
+    while ((allowBlocking) || (count < this.maxExpungePerReadOperation)) {
       Reference<? extends V> ref = referenceQueue.poll();
       if (ref == null) {
         break;
@@ -165,11 +173,6 @@ public class MemorySensitiveCache<K, V> {
         }
       }
     }
-    //    if (count > 0) {
-    //      long endTime = System.nanoTime();
-    //      System.out.println("Took " + (endTime - startTime)/1000000 + " ms to expunge " + count +
-    // " entries");
-    //    }
   }
 
   /**
@@ -230,6 +233,7 @@ public class MemorySensitiveCache<K, V> {
    * Gets the current number of elements in the hard cache (which is a sub-set of the total cache).
    * These elements are guaranteed to not be garbage collected.
    *
+   * @see #size()
    * @return number of elements in the hard cache. The number will be &ge; 0 and &le; the configured
    *     hard cache size as per the {@code hardRefSize} in the constructor.
    */
@@ -237,46 +241,50 @@ public class MemorySensitiveCache<K, V> {
     return hardCache.size();
   }
 
-  // Only to be called from inside a map.compute() call
-  // (as it doesn't perform locking on the hardCache)
-  private SoftValue<K, V> compute00(
-      K key, Function<K, V> mappingFunction, boolean allowRemoveByNull) {
-    V value = mappingFunction.apply(key);
-    if (value == null) {
-      // null means 'remove'
-      if (!allowRemoveByNull) {
-        throw new IllegalArgumentException("mappingFunction returned null");
-      } else {
-        hardCache.remove(key); // It may exist in the hardcache, so need to be removed there too
-        return null;
-      }
-    } else {
-      hardCache.add(key, value);
-      return new SoftValue<>(key, value, referenceQueue);
-    }
-  }
-
-  private void compute0(K key, Function<K, V> mappingFunction) {
-    expungeStaleEntries(true);
-    map.compute(key, (k, v) -> compute00(key, mappingFunction, true));
-  }
-
   /**
    * If the specified key is not already present in the cache, associate it with the given value.
    *
-   * @param key key with which the specified value is to be associated
-   * @param value value to be associated with the specified key if no value already exists
+   * <p>The action is performed atomically.
+   *
+   * @param key key with which the specified value is to be associated (not {@code null})
+   * @param value value to be associated with the specified key if no value already exists (not
+   *     {@code null})
    * @return existing value associated with the specified key, or {@code null} if no such value
    *     existed.
    */
   public V putIfAbsent(K key, V value) {
     Objects.requireNonNull(key, "key cannot be null");
     Objects.requireNonNull(value, "value cannot be null");
-    V existing = get(key);
-    if (existing == null) {
-      put(key, value);
+    expungeStaleEntries(true);
+
+    Object[] holder = new Object[] {SENTINEL};
+    map.compute(
+        key,
+        (k, sv) -> {
+          if (sv == null) {
+            return compute00(key, k1 -> value, false);
+          } else {
+            V v = sv.get();
+            if (v == null) {
+              // Existing mapping, but it points to an empty SoftReference ==> compute new
+              return compute00(key, k1 -> value, false);
+            } else {
+              // Existing mapping ==> Nothing needs to be done except to record usage
+              // in the hardcache to make sure it goes to the top of the stack
+              holder[0] = v; // remember existing value
+              hardCache.touch(key, v);
+              return sv;
+            }
+          }
+        });
+
+    if (holder[0] == SENTINEL) {
+      return null;
+    } else {
+      @SuppressWarnings("unchecked")
+      V existing = (V) holder[0];
+      return existing;
     }
-    return existing;
   }
 
   /**
@@ -386,24 +394,6 @@ public class MemorySensitiveCache<K, V> {
     return removeIfEmpty(key, true);
   }
 
-  private V removeIfEmpty(K key, boolean performHousekeeping) {
-    Objects.requireNonNull(key, "key cannot be null");
-    SoftValue<K, V> softValue =
-        map.computeIfPresent(
-            key,
-            (k, sRef) -> {
-              if (sRef.get() == null) {
-                return null;
-              } else {
-                return sRef;
-              }
-            });
-    if (softValue != null) {
-      return softValue.get();
-    }
-    return null;
-  }
-
   /** Clears the cache completely. */
   public synchronized void clear() {
     while (true) { // drain the reference queue
@@ -420,15 +410,22 @@ public class MemorySensitiveCache<K, V> {
    * Gets the size of the cache.
    *
    * <p>The method has constant time characteristics, <i>O(1)</i>.
+   *
+   * @see #hardCacheSize()
+   * @return number of entries in the cache.
    */
   public int size() {
     expungeStaleEntries(true);
     return map.size();
   }
 
+  /**
+   * Checks if the cache is empty.
+   *
+   * @return {@code true} if the cache is empty, {@code false} otherwise
+   */
   public boolean isEmpty() {
-    expungeStaleEntries(true);
-    return map.isEmpty();
+    return (size() == 0);
   }
 
   /**
@@ -479,6 +476,47 @@ public class MemorySensitiveCache<K, V> {
         return nextMatch;
       }
     };
+  }
+
+  // Only to be called from inside a map.compute() call
+  private SoftValue<K, V> compute00(
+      K key, Function<K, V> mappingFunction, boolean allowRemoveByNull) {
+    V value = mappingFunction.apply(key);
+    if (value == null) {
+      // null means 'remove'
+      if (!allowRemoveByNull) {
+        throw new IllegalArgumentException("mappingFunction returned null");
+      } else {
+        hardCache.remove(key); // It may exist in the hardcache, so need to be removed there too
+        return null;
+      }
+    } else {
+      hardCache.add(key, value);
+      return new SoftValue<>(key, value, referenceQueue);
+    }
+  }
+
+  private void compute0(K key, Function<K, V> mappingFunction) {
+    expungeStaleEntries(true);
+    map.compute(key, (k, v) -> compute00(key, mappingFunction, true));
+  }
+
+  private V removeIfEmpty(K key, boolean performHousekeeping) {
+    Objects.requireNonNull(key, "key cannot be null");
+    SoftValue<K, V> softValue =
+        map.computeIfPresent(
+            key,
+            (k, sRef) -> {
+              if (sRef.get() == null) {
+                return null;
+              } else {
+                return sRef;
+              }
+            });
+    if (softValue != null) {
+      return softValue.get();
+    }
+    return null;
   }
 
   /** Deque of key-value references. */

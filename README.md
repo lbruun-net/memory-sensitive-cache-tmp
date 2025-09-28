@@ -4,7 +4,9 @@
 
 A simple in-memory concurrent cache which grows with the available memory and starts evicting
 entries when the JVM is under memory pressure. Thus, the cache shrinks when the memory is needed
-elsewhere in the application. Unused memory is wasted memory. You might as well use it.
+elsewhere in the application. 
+
+Unused memory is wasted memory. You might as well use it.
 
 ## Features
 
@@ -12,7 +14,7 @@ elsewhere in the application. Unused memory is wasted memory. You might as well 
 - Evicts entries when the system is under memory pressure (see [Eviction](#eviction) below)
 - Optionally retains hard references to the most recently used N entries (see [Hard references](#hard-references) below)
 
-### Eviction when memory pressure
+### Eviction when under memory pressure
 
 The cache uses `SoftReference` to hold the values. This means that the values are eligible for
 garbage collection when the JVM is under memory pressure. The cache will grow until the point
@@ -40,7 +42,7 @@ evicted. The cache will retain a hard reference to these elements. This feature 
 countermeasure to the non-predictability of the cache's eviction as explained above: at least for
 the N most recently used elements, the retention is guaranteed.
 
-This feature is optional and can be configured when creating the cache, by setting `hardRefSize`
+This feature is optional and can be configured when creating the cache by setting `hardRefSize`
 greater than zero. If set to zero, no hard references are kept, which means all entries in the
 cache are (only) soft referenced. If set to a value greater than zero, some elements of the cache
 will be both soft and hard referenced. Those elements which are (also) hard referenced are the most
@@ -54,7 +56,12 @@ This cache is suitable where the requirement is that the cache should be able to
 the available memory and where it is acceptable that eviction is not fully predictable, but
 at least _biased_ towards first-in-first-out.
 
+This type of cache is by no means suitable for any use case. The many standard cache implementations in the 
+Java ecosystem (e.g. Caffeine, Ehcache, etc.) are more suitable for most use cases.
+
+
 ### Requirements
+
 Java 17 or later.
 
 
@@ -64,6 +71,9 @@ Java 17 or later.
 **artifactId**: `memorysensitive-cache` \
 **version**: check [Maven Central](https://search.maven.org/artifact/net.lbruun.cache/memorysensitive-cache)
 
+### Documentation
+
+See the [javadoc](https://javadoc.io/doc/net.lbruun.cache/memorysensitive-cache).
 
 
 ### Instantiate the cache
@@ -83,4 +93,6 @@ public class MyConfig {
     }
 }
 ```
-
+Also available are Spring Cache wrappers in the `net.lbruun.cache.spring` package. These are only
+useful if you want to use Spring's `@Cacheable` annotation. If you don't need that, just use
+the `MemorySensitiveCache` directly as shown above.

@@ -77,9 +77,9 @@ class MemorySensitiveCacheTest {
   @Test
   void removeIfEmpty() {
     MemorySensitiveCache<Integer, byte[]> cache = new MemorySensitiveCache<>(Integer.class, 1);
-    cache.put(1, randomBytes(10000000));
-    cache.put(2, randomBytes(10000000));
-    cache.put(3, randomBytes(10000000));
+    cache.put(1, randomBytes(1000));
+    cache.put(2, randomBytes(1000));
+    cache.put(3, randomBytes(1000));
 
     assertEquals(3, cache.size());
     assertNotNull(cache.get(1));
@@ -96,10 +96,24 @@ class MemorySensitiveCacheTest {
   }
 
   @Test
-  void clear() {}
+  void putIfAbsent() throws InterruptedException {
+    MemorySensitiveCache<Integer, String> cache = new MemorySensitiveCache<>(Integer.class, 1);
+    cache.put(1, "ABC");
+    cache.put(2, "DEF");
+    cache.put(3, "GHI");
+    assertEquals(3, cache.size());
+
+    String existing1 = cache.putIfAbsent(3, "NEW");
+    assertEquals("GHI", existing1);
+    assertEquals("GHI", cache.get(3));
+
+    String existing2 = cache.putIfAbsent(4, "NEW");
+    assertNull(existing2);
+    assertEquals("NEW", cache.get(4));
+  }
 
   @Test
-  void close() {}
+  void clear() {}
 
   @Test
   void test_memoryPressure() {
@@ -164,8 +178,9 @@ class MemorySensitiveCacheTest {
     MemorySensitiveCache<Integer, byte[]> cache = new MemorySensitiveCache<>(Integer.class, 100);
 
     Random rand = new Random();
-    int min = 1024 * 10;
-    int max = 1024 * 1024 * 25;
+    int min = 1024 * 1;
+    // int max = 1024 * 1024 * 25;
+    int max = 1024 * 100;
 
     int i = 0;
     while (true) {
@@ -186,12 +201,13 @@ class MemorySensitiveCacheTest {
     List<byte[]> memoryHog = new ArrayList<>();
     int chunkSize = 1024 * 1024 * 100; // Allocate 100MB chunks
     try {
-      for (int i = 0; i < 1_000; i++) {
+      while (true) {
         memoryHog.add(new byte[chunkSize]);
       }
     } catch (OutOfMemoryError ignored) {
+      memoryHog = null;
+      return;
     }
-    memoryHog = null;
   }
 
   private byte[] randomBytes(int len) {

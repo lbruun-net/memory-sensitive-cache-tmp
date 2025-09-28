@@ -36,7 +36,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '24'
           server-id: maven-central # Value of <id> in <server> section of generated settings.xml
           server-username: MAVEN_CENTRAL_USERNAME # env variable for username in <server> section of generated settings.xml
           server-password: MAVEN_CENTRAL_PASSWORD # env variable for password in <server> section of generated settings.xml
